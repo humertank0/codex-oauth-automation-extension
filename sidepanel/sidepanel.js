@@ -239,7 +239,7 @@ function syncAutoRunState(source = {}) {
   const autoRunning = source.autoRunning !== undefined
     ? Boolean(source.autoRunning)
     : (source.autoRunPhase !== undefined || source.phase !== undefined
-      ? ['running', 'waiting_email', 'retrying'].includes(phase)
+      ? ['running', 'waiting_email', 'waiting_challenge', 'retrying'].includes(phase)
       : currentAutoRun.autoRunning);
 
   currentAutoRun = {
@@ -256,7 +256,15 @@ function isAutoRunLockedPhase() {
 }
 
 function isAutoRunPausedPhase() {
+  return currentAutoRun.phase === 'waiting_email' || currentAutoRun.phase === 'waiting_challenge';
+}
+
+function isAutoRunWaitingEmailPhase() {
   return currentAutoRun.phase === 'waiting_email';
+}
+
+function isAutoRunWaitingChallengePhase() {
+  return currentAutoRun.phase === 'waiting_challenge';
 }
 
 function getAutoRunLabel(payload = currentAutoRun) {
@@ -360,6 +368,10 @@ function applyAutoRunStatus(payload = currentAutoRun) {
       autoContinueBar.style.display = 'flex';
       btnAutoRun.innerHTML = `已暂停${runLabel}`;
       break;
+    case 'waiting_challenge':
+      autoContinueBar.style.display = 'flex';
+      btnAutoRun.innerHTML = `待验证${runLabel}`;
+      break;
     case 'running':
       autoContinueBar.style.display = 'none';
       btnAutoRun.innerHTML = `运行中${runLabel}`;
@@ -376,6 +388,15 @@ function applyAutoRunStatus(payload = currentAutoRun) {
         btnFetchEmail.disabled = false;
       }
       break;
+  }
+
+  if (paused) {
+    const autoHint = autoContinueBar.querySelector('.auto-hint');
+    if (autoHint) {
+      autoHint.textContent = isAutoRunWaitingChallengePhase()
+        ? 'Burner Mailbox 需要先完成人机验证，完成后点击继续'
+        : '先自动获取邮箱，或手动粘贴邮箱后再继续';
+    }
   }
 
   updateStopButtonState(paused || locked || Object.values(getStepStatuses()).some(status => status === 'running'));
@@ -482,6 +503,9 @@ function updateMailProviderUI() {
   const useInbucket = selectMailProvider.value === 'inbucket';
   rowInbucketHost.style.display = useInbucket ? '' : 'none';
   rowInbucketMailbox.style.display = useInbucket ? '' : 'none';
+  inputEmail.placeholder = selectMailProvider.value === 'burner'
+    ? '可自动获取 Burner 邮箱，或手动粘贴邮箱'
+    : '自动获取或手动粘贴邮箱';
 }
 
 // ============================================================
@@ -570,7 +594,9 @@ function updateStatusDisplay(state) {
   statusBar.className = 'status-bar';
 
   if (isAutoRunPausedPhase()) {
-    displayStatus.textContent = `自动已暂停${getAutoRunLabel()}，等待邮箱后继续`;
+    displayStatus.textContent = isAutoRunWaitingChallengePhase()
+      ? `自动已暂停${getAutoRunLabel()}，等待 Burner 验证完成`
+      : `自动已暂停${getAutoRunLabel()}，等待邮箱后继续`;
     statusBar.classList.add('paused');
     return;
   }
@@ -680,6 +706,62 @@ async function fetchDuckEmail(options = {}) {
   }
 }
 
+async function fetchBurnerEmail(options = {}) {
+  const { showFailureToast = true } = options;
+  const defaultLabel = '获取';
+  btnFetchEmail.disabled = true;
+  btnFetchEmail.textContent = '...';
+
+  try {
+    let response = await chrome.runtime.sendMessage({
+      type: 'FETCH_BURNER_EMAIL',
+      source: 'sidepanel',
+      payload: { generateNew: true },
+    });
+
+    if (response?.error && /security verification required/i.test(response.error)) {
+      const confirmed = window.confirm(
+        'Burner Mailbox 需要先完成人机验证。\n\n请切到邮箱页完成验证，完成后点“确定”，我会继续获取邮箱。'
+      );
+      if (!confirmed) {
+        throw new Error(response.error);
+      }
+
+      response = await chrome.runtime.sendMessage({
+        type: 'CONTINUE_BURNER_AFTER_CHALLENGE',
+        source: 'sidepanel',
+        payload: { generateNew: true },
+      });
+    }
+
+    if (response?.error) {
+      throw new Error(response.error);
+    }
+    if (!response?.email) {
+      throw new Error('未返回 Burner Mailbox 邮箱。');
+    }
+
+    inputEmail.value = response.email;
+    showToast(`已获取 ${response.email}`, 'success', 2500);
+    return response.email;
+  } catch (err) {
+    if (showFailureToast) {
+      showToast(`自动获取失败：${err.message}`, 'error');
+    }
+    throw err;
+  } finally {
+    btnFetchEmail.disabled = false;
+    btnFetchEmail.textContent = defaultLabel;
+  }
+}
+
+async function fetchEmailForCurrentProvider(options = {}) {
+  if (selectMailProvider.value === 'burner') {
+    return await fetchBurnerEmail(options);
+  }
+  return await fetchDuckEmail(options);
+}
+
 function syncPasswordToggleLabel() {
   const isHidden = inputPassword.type === 'password';
   btnTogglePassword.innerHTML = isHidden ? EYE_OPEN_ICON : EYE_CLOSED_ICON;
@@ -757,7 +839,7 @@ document.querySelectorAll('.step-btn').forEach(btn => {
         let email = inputEmail.value.trim();
         if (!email) {
           try {
-            email = await fetchDuckEmail({ showFailureToast: false });
+            email = await fetchEmailForCurrentProvider({ showFailureToast: false });
           } catch (err) {
             showToast(`自动获取失败：${err.message}，请手动粘贴邮箱后重试。`, 'warn');
             return;
@@ -780,7 +862,7 @@ document.querySelectorAll('.step-btn').forEach(btn => {
 });
 
 btnFetchEmail.addEventListener('click', async () => {
-  await fetchDuckEmail().catch(() => {});
+  await fetchEmailForCurrentProvider().catch(() => {});
 });
 
 btnTogglePassword.addEventListener('click', () => {
@@ -848,12 +930,12 @@ btnAutoRun.addEventListener('click', async () => {
 
 btnAutoContinue.addEventListener('click', async () => {
   const email = inputEmail.value.trim();
-  if (!email) {
-    showToast('请先获取或粘贴 DuckDuckGo 邮箱。', 'warn');
+  if (isAutoRunWaitingEmailPhase() && !email) {
+    showToast('请先获取或粘贴邮箱。', 'warn');
     return;
   }
   autoContinueBar.style.display = 'none';
-  await chrome.runtime.sendMessage({ type: 'RESUME_AUTO_RUN', source: 'sidepanel', payload: { email } });
+  await chrome.runtime.sendMessage({ type: 'RESUME_AUTO_RUN', source: 'sidepanel', payload: email ? { email } : {} });
 });
 
 // Reset
@@ -1038,7 +1120,7 @@ chrome.runtime.onMessage.addListener((message) => {
 
     case 'AUTO_RUN_STATUS': {
       syncLatestState({
-        autoRunning: ['running', 'waiting_email', 'retrying'].includes(message.payload.phase),
+        autoRunning: ['running', 'waiting_email', 'waiting_challenge', 'retrying'].includes(message.payload.phase),
         autoRunPhase: message.payload.phase,
         autoRunCurrentRun: message.payload.currentRun,
         autoRunTotalRuns: message.payload.totalRuns,

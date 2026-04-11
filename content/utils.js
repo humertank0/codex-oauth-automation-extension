@@ -7,6 +7,7 @@ const SCRIPT_SOURCE = (() => {
   if (url.includes('mail.qq.com')) return 'qq-mail';
   if (url.includes('mail.163.com')) return 'mail-163';
   if (url.includes('duckduckgo.com/email/settings/autofill')) return 'duck-mail';
+  if (url.includes('burnermailbox.com/mailbox') || url.includes('burnermailbox.com/switch/')) return 'burner-mail';
   if (url.includes('chatgpt.com')) return 'chatgpt';
   // VPS panel — detected dynamically since URL is configurable
   return 'vps-panel';
@@ -329,7 +330,7 @@ async function humanPause(min = 250, max = 850) {
 
 // Auto-report ready on load
 // Skip ready signal from child iframes of mail pages to avoid overwriting the top frame's registration
-const _isMailChildFrame = (SCRIPT_SOURCE === 'qq-mail' || SCRIPT_SOURCE === 'mail-163' || SCRIPT_SOURCE === 'inbucket-mail') && window !== window.top;
+const _isMailChildFrame = (SCRIPT_SOURCE === 'qq-mail' || SCRIPT_SOURCE === 'mail-163' || SCRIPT_SOURCE === 'inbucket-mail' || SCRIPT_SOURCE === 'burner-mail') && window !== window.top;
 if (!_isMailChildFrame) {
   reportReady();
 }

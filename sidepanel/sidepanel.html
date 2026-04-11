@@ -55,6 +55,7 @@
       <div class="data-row">
         <span class="data-label">邮箱服务</span>
         <select id="select-mail-provider" class="data-select">
+          <option value="burner">Burner Mailbox</option>
           <option value="163">163 邮箱 (mail.163.com)</option>
           <option value="qq">QQ 邮箱 (wx.mail.qq.com)</option>
           <option value="inbucket">Inbucket（自定义主机）</option>
@@ -71,7 +72,7 @@
       <div class="data-row">
         <span class="data-label">邮箱</span>
         <div class="data-inline">
-          <input type="text" id="input-email" class="data-input" placeholder="粘贴 DuckDuckGo 邮箱" />
+          <input type="text" id="input-email" class="data-input" placeholder="自动获取或手动粘贴邮箱" />
           <button id="btn-fetch-email" class="btn btn-outline btn-sm" type="button">获取</button>
         </div>
       </div>
@@ -107,7 +108,7 @@
     </div>
     <div id="auto-continue-bar" class="auto-continue-bar" style="display:none;">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      <span class="auto-hint">先自动获取 Duck 邮箱，或手动粘贴邮箱后再继续</span>
+      <span class="auto-hint">先自动获取邮箱，或手动粘贴邮箱后再继续</span>
       <button id="btn-auto-continue" class="btn btn-primary btn-sm">继续</button>
     </div>
   </section>

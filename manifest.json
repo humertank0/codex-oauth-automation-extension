@@ -55,6 +55,14 @@
       ],
       "js": ["content/utils.js", "content/duck-mail.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://burnermailbox.com/mailbox*",
+        "https://burnermailbox.com/switch/*"
+      ],
+      "js": ["content/utils.js", "content/burner-mail.js"],
+      "run_at": "document_idle"
     }
   ],
   "action": {

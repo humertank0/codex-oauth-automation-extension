@@ -4,6 +4,8 @@ importScripts('data/names.js');
 
 const LOG_PREFIX = '[MultiPage:bg]';
 const DUCK_AUTOFILL_URL = 'https://duckduckgo.com/email/settings/autofill';
+const BURNER_MAILBOX_URL = 'https://burnermailbox.com/mailbox';
+const BURNER_CHALLENGE_REQUIRED_MESSAGE = 'Burner Mailbox security verification required.';
 const STOP_ERROR_MESSAGE = '流程已被用户停止。';
 const HUMAN_STEP_DELAY_MIN = 700;
 const HUMAN_STEP_DELAY_MAX = 2200;
@@ -20,7 +22,7 @@ const PERSISTED_SETTING_DEFAULTS = {
   vpsPassword: '', // VPS 面板登录密码，可手动填写。
   customPassword: '', // 自定义账号密码；留空时由程序自动生成随机密码。
   autoRunSkipFailures: false, // 自动运行遇到失败步骤后，是否继续执行后续流程。
-  mailProvider: '163', // 验证码邮箱来源，当前支持 163 / inbucket。
+  mailProvider: '163', // 验证码邮箱来源，当前支持 163 / qq / inbucket / burner。
   inbucketHost: '', // 仅当 mailProvider 为 inbucket 时填写 Inbucket 地址，其他情况保持为空。
   inbucketMailbox: '', // 仅当 mailProvider 为 inbucket 时填写邮箱名，其他情况保持为空。
 };
@@ -129,6 +131,7 @@ async function resetState() {
   const [prev, persistedSettings] = await Promise.all([
     chrome.storage.session.get([
       'seenCodes',
+      'seenBurnerMailIds',
       'seenInbucketMailIds',
       'accounts',
       'tabRegistry',
@@ -141,6 +144,7 @@ async function resetState() {
     ...DEFAULT_STATE,
     ...persistedSettings,
     seenCodes: prev.seenCodes || [],
+    seenBurnerMailIds: prev.seenBurnerMailIds || [],
     seenInbucketMailIds: prev.seenInbucketMailIds || [],
     accounts: prev.accounts || [],
     tabRegistry: prev.tabRegistry || {},
@@ -614,6 +618,7 @@ function getSourceLabel(source) {
     'mail-163': '163 邮箱',
     'inbucket-mail': 'Inbucket 邮箱',
     'duck-mail': 'Duck 邮箱',
+    'burner-mail': 'Burner Mailbox',
   };
   return labels[source] || source || '未知来源';
 }
@@ -648,9 +653,13 @@ function getErrorMessage(error) {
   return String(typeof error === 'string' ? error : error?.message || '');
 }
 
+function isBurnerChallengeError(error) {
+  return getErrorMessage(error).includes(BURNER_CHALLENGE_REQUIRED_MESSAGE);
+}
+
 function isVerificationMailPollingError(error) {
   const message = getErrorMessage(error);
-  return /未在 .*邮箱中找到新的匹配邮件|邮箱轮询结束，但未获取到验证码|无法获取新的(?:注册|登录)验证码|页面未能重新就绪|页面通信异常|did not respond in \d+s/i.test(message);
+  return /未在 .*邮箱中找到新的匹配邮件|邮箱轮询结束，但未获取到验证码|无法获取新的(?:注册|登录)验证码|页面未能重新就绪|页面通信异常|did not respond in \d+s|No matching verification email found|Burner Mailbox page did not become ready|Timed out waiting for Burner Mailbox|Could not find the Burner Mailbox/i.test(message);
 }
 
 function isRestartCurrentAttemptError(error) {
@@ -762,7 +771,7 @@ function getAutoRunStatusPayload(phase, payload = {}) {
   const currentRun = payload.currentRun ?? autoRunCurrentRun;
   const totalRuns = payload.totalRuns ?? autoRunTotalRuns;
   const attemptRun = payload.attemptRun ?? autoRunAttemptRun;
-  const autoRunning = phase === 'running' || phase === 'waiting_email' || phase === 'retrying';
+  const autoRunning = phase === 'running' || phase === 'waiting_email' || phase === 'waiting_challenge' || phase === 'retrying';
 
   return {
     autoRunning,
@@ -793,7 +802,15 @@ function isAutoRunLockedState(state) {
 }
 
 function isAutoRunPausedState(state) {
+  return Boolean(state.autoRunning) && (state.autoRunPhase === 'waiting_email' || state.autoRunPhase === 'waiting_challenge');
+}
+
+function isAutoRunWaitingEmailState(state) {
   return Boolean(state.autoRunning) && state.autoRunPhase === 'waiting_email';
+}
+
+function isAutoRunWaitingChallengeState(state) {
+  return Boolean(state.autoRunning) && state.autoRunPhase === 'waiting_challenge';
 }
 
 async function ensureManualInteractionAllowed(actionLabel) {
@@ -1089,6 +1106,23 @@ async function handleMessage(message, sender) {
       return { ok: true, email };
     }
 
+    case 'FETCH_BURNER_EMAIL': {
+      clearStopRequest();
+      const state = await getState();
+      if (isAutoRunLockedState(state)) {
+        throw new Error('自动流程运行中，当前不能手动获取 Burner Mailbox 邮箱。');
+      }
+      const email = await fetchBurnerEmail(message.payload || {});
+      await resumeAutoRun();
+      return { ok: true, email };
+    }
+
+    case 'CONTINUE_BURNER_AFTER_CHALLENGE': {
+      clearStopRequest();
+      const email = await continueBurnerAfterChallenge(message.payload || {});
+      return { ok: true, email };
+    }
+
     case 'STOP_FLOW': {
       await requestStop();
       return { ok: true };
@@ -1309,6 +1343,297 @@ async function fetchDuckEmail(options = {}) {
   return result.email;
 }
 
+async function probeBurnerMailboxState(tabId) {
+  const result = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const normalizeText = (value) => (value || '').replace(/\s+/g, ' ').trim();
+      const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      };
+      const text = normalizeText(document.body?.innerText || document.body?.textContent || '');
+      const title = normalizeText(document.title);
+      const selectors = [
+        '#email_id',
+        '.actions #email_id',
+        '.in-app-actions #email_id',
+        '.in-app-actions .block.appearance-none',
+        '.actions .block.appearance-none',
+      ];
+      const hasMailboxEmail = selectors.some(selector =>
+        Array.from(document.querySelectorAll(selector)).some(el => /@/.test(normalizeText(el.textContent || el.value || '')))
+      );
+      const hasMailboxAction = [
+        '.btn_copy',
+        'form[wire\\:submit\\.prevent="random"] input[type="submit"]',
+        'form[wire\\:submit\\.prevent="random"] button',
+      ].some(selector => document.querySelector(selector));
+      const successEl = document.querySelector('#challenge-success-text');
+      const challengeFrame = document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[title*="security challenge" i]');
+      const challengeInput = document.querySelector('input[name="cf-turnstile-response"], input[id*="cf-chl-widget"][type="hidden"]');
+      const challengeSuccess = Boolean(successEl && isVisible(successEl))
+        || /verification successful|验证成功|验证已成功|正在等待 burnermailbox\.com 响应|等待 burnermailbox\.com 响应/i.test(text);
+      const challengeActive = /just a moment/i.test(title)
+        || /进行安全验证|正在进行安全验证|安全验证|验证您不是机器人|验证你不是机器人|此网站使用安全服务来防止恶意机器人|ray id/i.test(title)
+        || /performing security verification|verifies you are not a bot|verify you are not a bot|security service to protect against malicious bots|ray id|进行安全验证|正在进行安全验证|安全验证|验证您不是机器人|验证你不是机器人|此网站使用安全服务来防止恶意机器人/i.test(text)
+        || Boolean(challengeFrame)
+        || Boolean(challengeInput)
+        || location.href.includes('__cf_chl');
+
+      return {
+        url: location.href,
+        title,
+        ready: hasMailboxEmail || hasMailboxAction,
+        challengeActive,
+        challengeSuccess,
+      };
+    },
+  }).catch(() => null);
+
+  return result?.[0]?.result || null;
+}
+
+async function waitForBurnerMailboxReadyAfterChallenge(timeout = 45000) {
+  const start = Date.now();
+
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+
+    const alive = await isTabAlive('burner-mail');
+    if (!alive) {
+      throw new Error('Burner Mailbox 标签页在验证过程中被关闭了。');
+    }
+
+    const tabId = await getTabId('burner-mail');
+    if (!tabId) {
+      throw new Error('Burner Mailbox 标签页当前不可用。');
+    }
+
+    const state = await probeBurnerMailboxState(tabId);
+    if (state?.ready) {
+      return state;
+    }
+
+    await sleepWithStop(1000);
+  }
+
+  throw new Error('Burner Mailbox 还没有返回可操作的邮箱页面。');
+}
+
+async function continueBurnerAfterChallenge(options = {}) {
+  const { generateNew = true } = options;
+
+  await addLog('Burner Mailbox：正在等待人机验证页面结束...', 'info');
+  await waitForBurnerMailboxReadyAfterChallenge(45000);
+  await addLog('Burner Mailbox：人机验证已通过，继续获取邮箱...', 'info');
+  return await fetchBurnerEmail({ generateNew });
+}
+
+async function waitForBurnerChallengeResolution(contextLabel = 'Burner Mailbox') {
+  let challengeResolved = false;
+
+  while (!challengeResolved) {
+    await addLog(`${contextLabel}：检测到 Burner Mailbox 人机验证，请在邮箱页完成验证后点击“继续”`, 'warn');
+    await broadcastAutoRunStatus('waiting_challenge', {
+      currentRun: Math.max(1, autoRunCurrentRun || 1),
+      totalRuns: Math.max(1, autoRunTotalRuns || 1),
+      attemptRun: Math.max(1, autoRunAttemptRun || 1),
+    });
+    await waitForResume({ requireEmail: false });
+
+    await addLog('Burner Mailbox：正在等待人机验证页面结束...', 'info');
+    try {
+      await waitForBurnerMailboxReadyAfterChallenge(45000);
+      challengeResolved = true;
+    } catch (waitErr) {
+      await addLog(`Burner Mailbox 人机验证还没有完成：${waitErr.message}`, 'warn');
+    }
+  }
+}
+
+async function fetchBurnerEmail(options = {}) {
+  throwIfStopped();
+  const { generateNew = true } = options;
+
+  await addLog(`Burner Mailbox：正在打开邮箱页（${generateNew ? '生成新地址' : '复用当前地址'}）...`);
+  const tabId = await reuseOrCreateTab('burner-mail', BURNER_MAILBOX_URL, {
+    reloadIfSameUrl: generateNew,
+  });
+
+  let result = null;
+  let previousEmail = '';
+
+  try {
+    const prepared = await sendToContentScript('burner-mail', {
+      type: 'PREPARE_BURNER_EMAIL',
+      source: 'background',
+      payload: { generateNew },
+    });
+
+    if (prepared?.email && !generateNew) {
+      result = { email: prepared.email, generated: false };
+    }
+
+    previousEmail = prepared?.previousEmail || '';
+
+    if (!result && generateNew) {
+      try {
+        await sendToContentScript('burner-mail', {
+          type: 'CLICK_RANDOM_BURNER_EMAIL',
+          source: 'background',
+          payload: { previousEmail },
+        });
+      } catch (err) {
+        await addLog(`Burner Mailbox：点击随机邮箱后消息通道被关闭，等待页面稳定：${err.message}`, 'warn');
+      }
+
+      for (let attempt = 1; attempt <= 24; attempt++) {
+        await sleepWithStop(500);
+        await reuseOrCreateTab('burner-mail', BURNER_MAILBOX_URL);
+
+        const readResult = await sendToContentScript('burner-mail', {
+          type: 'READ_BURNER_EMAIL',
+          source: 'background',
+          payload: { previousEmail },
+        }).catch(() => null);
+
+        if (readResult?.email && (readResult.changed || !previousEmail)) {
+          result = { email: readResult.email, generated: true };
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    if (isBurnerChallengeError(err)) {
+      throw err;
+    }
+    await addLog(`Burner Mailbox：内容脚本流程失败，回退到页面内脚本：${err.message}`, 'warn');
+  }
+
+  if (result?.error || !result?.email) {
+    const fallback = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async (shouldGenerateNew, prevEmail) => {
+        const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+        const normalizeText = (value) => (value || '').replace(/\s+/g, ' ').trim();
+        const extractEmail = (value) => normalizeText(value).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '';
+        const isVisible = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const findByText = (selectors, pattern) => {
+          const regex = pattern instanceof RegExp ? pattern : new RegExp(pattern, 'i');
+          for (const selector of selectors) {
+            for (const el of document.querySelectorAll(selector)) {
+              if (!isVisible(el)) continue;
+              const text = normalizeText(el.textContent || el.value || '');
+              if (regex.test(text)) return el;
+            }
+          }
+          return null;
+        };
+        const getCurrentEmail = () => {
+          const selectors = [
+            '#email_id',
+            '.actions #email_id',
+            '.in-app-actions #email_id',
+            '.in-app-actions .block.appearance-none',
+            '.actions .block.appearance-none',
+          ];
+          for (const selector of selectors) {
+            for (const el of document.querySelectorAll(selector)) {
+              const email = extractEmail(el.textContent || el.value || '');
+              if (email) return email;
+            }
+          }
+          return '';
+        };
+
+        const currentEmail = getCurrentEmail();
+        if (currentEmail && !shouldGenerateNew) {
+          return { email: currentEmail, generated: false };
+        }
+
+        const previous = extractEmail(prevEmail || currentEmail);
+        if (shouldGenerateNew) {
+          const newButton = findByText(
+            ['.actions .cursor-pointer', '.actions div', '.actions button', '.actions a'],
+            /^(new|新的)$|new email|新邮件/i
+          );
+          if (!newButton) {
+            return { error: 'Fallback could not find Burner Mailbox New button.' };
+          }
+
+          newButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          await sleep(700);
+
+          const randomButton = findByText(
+            [
+              'form[wire\\:submit\\.prevent="random"] input[type="submit"]',
+              'form[wire\\:submit\\.prevent="random"] button',
+              '.app-action input[type="submit"]',
+              '.app-action button',
+            ],
+            /random|create a random email|随机|创建随机电子邮件/i
+          );
+          if (!randomButton) {
+            return { error: 'Fallback could not find Burner Mailbox random-email button.' };
+          }
+
+          randomButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+
+        for (let attempt = 1; attempt <= 30; attempt++) {
+          await sleep(500);
+
+          const copyButton = findByText(
+            ['.btn_copy', '.actions .cursor-pointer', '.actions div', '.actions button', '.actions a'],
+            /^(copy|复制)$/i
+          );
+          if (copyButton) {
+            copyButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          }
+
+          const email = getCurrentEmail();
+          if (email && (!previous || email !== previous || !shouldGenerateNew)) {
+            return {
+              email,
+              generated: shouldGenerateNew,
+            };
+          }
+        }
+
+        return { error: 'Fallback timed out waiting for Burner Mailbox email.' };
+      },
+      args: [generateNew, previousEmail],
+    }).catch(() => null);
+
+    const fallbackResult = fallback?.[0]?.result || null;
+    if (fallbackResult?.error) {
+      throw new Error(fallbackResult.error);
+    }
+    if (fallbackResult?.email) {
+      result = fallbackResult;
+    }
+  }
+
+  if (result?.error && isBurnerChallengeError(result.error)) {
+    throw new Error(`${BURNER_CHALLENGE_REQUIRED_MESSAGE} Complete the verification on the mailbox tab, then continue.`);
+  }
+  if (!result?.email) {
+    throw new Error('Burner Mailbox email not returned.');
+  }
+
+  await setEmailState(result.email);
+  await addLog(`Burner Mailbox：${result.generated ? '已生成' : '已读取'} ${result.email}`, 'ok');
+  return result.email;
+}
+
 // ============================================================
 // Auto Run Flow
 // ============================================================
@@ -1334,7 +1659,7 @@ const AUTO_STEP_DELAYS = {
 async function resumeAutoRunIfWaitingForEmail(options = {}) {
   const { silent = false } = options;
   const state = await getState();
-  if (!state.email || !isAutoRunPausedState(state)) {
+  if (!state.email || !isAutoRunWaitingEmailState(state)) {
     return false;
   }
 
@@ -1354,6 +1679,37 @@ async function ensureAutoEmailReady(targetRun, totalRuns, attemptRuns) {
   const currentState = await getState();
   if (currentState.email) {
     return currentState.email;
+  }
+
+  if (currentState.mailProvider === 'burner') {
+    try {
+      const burnerEmail = await fetchBurnerEmail({ generateNew: true });
+      await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：Burner 邮箱已就绪：${burnerEmail}（第 ${attemptRuns} 次尝试）===`, 'ok');
+      return burnerEmail;
+    } catch (err) {
+      if (isBurnerChallengeError(err)) {
+        await waitForBurnerChallengeResolution(`目标 ${targetRun}/${totalRuns} 轮`);
+        const burnerEmail = await fetchBurnerEmail({ generateNew: true });
+        await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：Burner 邮箱已就绪：${burnerEmail}（第 ${attemptRuns} 次尝试）===`, 'ok');
+        return burnerEmail;
+      }
+
+      await addLog(`Burner Mailbox 自动获取失败：${err.message}`, 'warn');
+      await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮已暂停：请先获取邮箱或手动粘贴邮箱，然后继续 ===`, 'warn');
+      await broadcastAutoRunStatus('waiting_email', {
+        currentRun: targetRun,
+        totalRuns,
+        attemptRun: attemptRuns,
+      });
+
+      await waitForResume();
+
+      const resumedState = await getState();
+      if (!resumedState.email) {
+        throw new Error('无法继续：当前没有邮箱地址。');
+      }
+      return resumedState.email;
+    }
   }
 
   let lastDuckError = null;
@@ -1636,10 +1992,11 @@ async function autoRunLoop(totalRuns, options = {}) {
   clearStopRequest();
 }
 
-async function waitForResume() {
+async function waitForResume(options = {}) {
+  const { requireEmail = true } = options;
   throwIfStopped();
   const state = await getState();
-  if (state.email) {
+  if (requireEmail && state.email) {
     await addLog('邮箱已就绪，自动继续后续步骤...', 'info');
     return;
   }
@@ -1649,15 +2006,30 @@ async function waitForResume() {
   });
 }
 
+function resolveResumeWaiter() {
+  if (!resumeWaiter) {
+    return false;
+  }
+
+  resumeWaiter.resolve();
+  resumeWaiter = null;
+  return true;
+}
+
 async function resumeAutoRun() {
   throwIfStopped();
   const state = await getState();
-  if (!state.email) {
+  const waitingChallenge = isAutoRunWaitingChallengeState(state);
+  const waitingEmail = isAutoRunWaitingEmailState(state);
+
+  if (!waitingChallenge && !state.email) {
     await addLog('无法继续：当前没有邮箱地址，请先在侧边栏填写邮箱。', 'error');
     return false;
   }
 
-  const resumedInMemory = await resumeAutoRunIfWaitingForEmail({ silent: true });
+  const resumedInMemory = waitingEmail
+    ? await resumeAutoRunIfWaitingForEmail({ silent: true })
+    : resolveResumeWaiter();
   if (resumedInMemory) {
     return true;
   }
@@ -1761,6 +2133,9 @@ async function executeStep3(state) {
 
 function getMailConfig(state) {
   const provider = state.mailProvider || 'qq';
+  if (provider === 'burner') {
+    return { source: 'burner-mail', url: BURNER_MAILBOX_URL, label: 'Burner Mailbox' };
+  }
   if (provider === '163') {
     return { source: 'mail-163', url: 'https://mail.163.com/js6/main.jsp?df=mail163_letter#module=mbox.ListModule%7C%7B%22fid%22%3A1%2C%22order%22%3A%22date%22%2C%22desc%22%3Atrue%7D', label: '163 邮箱' };
   }
@@ -1805,6 +2180,20 @@ function getVerificationCodeStateKey(step) {
 
 function getVerificationCodeLabel(step) {
   return step === 4 ? '注册' : '登录';
+}
+
+async function handleBurnerChallengeDuringVerification(step, error) {
+  if (!isBurnerChallengeError(error)) {
+    return false;
+  }
+
+  const state = await getState();
+  if (!isAutoRunPausedState(state) && !state.autoRunning) {
+    throw new Error(`检测到 Burner Mailbox 人机验证。请切到邮箱页完成验证后，重新执行步骤 ${step}。`);
+  }
+
+  await waitForBurnerChallengeResolution(`步骤 ${step}`);
+  return true;
 }
 
 function getVerificationPollPayload(step, state, overrides = {}) {
@@ -1908,6 +2297,11 @@ async function pollFreshVerificationCode(step, state, mail, pollOverrides = {}) 
 
       return result;
     } catch (err) {
+      if (mail.source === 'burner-mail' && await handleBurnerChallengeDuringVerification(step, err)) {
+        round -= 1;
+        continue;
+      }
+
       lastError = err;
       await addLog(`步骤 ${step}：${err.message}`, 'warn');
       if (round < maxRounds) {
