@@ -92,6 +92,14 @@ function hashText(text) {
   return Math.abs(hash).toString(36);
 }
 
+function extractRenderedMailId(text) {
+  const normalized = normalizeText(text);
+  if (!normalized) return '';
+
+  const match = normalized.match(/\bID:\s*([A-Za-z0-9_-]{6,})\b/i);
+  return match ? match[1] : '';
+}
+
 function collectSameOriginFrameText() {
   const texts = [];
   for (const frame of document.querySelectorAll('iframe')) {
@@ -139,6 +147,9 @@ function matchMailText(text, senderFilters, subjectFilters, targetEmail) {
 }
 
 function getMailCandidateId(el, index) {
+  const renderedId = extractRenderedMailId(el.innerText || el.textContent || '');
+  if (renderedId) return `rendered:${renderedId}`;
+
   const explicitId = el.getAttribute('data-id')
     || el.getAttribute('data-message-id')
     || el.getAttribute('data-mail-id')
@@ -155,6 +166,10 @@ function getMailCandidateId(el, index) {
 
 function collectMailCandidates(payload) {
   const selectors = [
+    '.mail-item',
+    '.n-card',
+    '.n-card-header',
+    '.n-card__content',
     '[data-message-id]',
     '[data-mail-id]',
     '[data-email-id]',
@@ -173,7 +188,6 @@ function collectMailCandidates(payload) {
     '[role="row"]',
     '[role="article"]',
     'a',
-    'button',
   ];
   const visited = new Set();
   const candidates = [];
@@ -186,22 +200,33 @@ function collectMailCandidates(payload) {
 
       const text = normalizeText(el.innerText || el.textContent || '');
       if (text.length < 12) continue;
+      const renderedId = extractRenderedMailId(text);
 
       const match = matchMailText(text, payload.senderFilters || [], payload.subjectFilters || [], payload.targetEmail || '');
       if (!match.matched) continue;
+
+      // The target app visibly renders "ID: <mail-id>" for each list item.
+      // Prefer those rows and skip generic containers/buttons without a mail id.
+      if (!renderedId && (selector === '.mail-item' || selector === '.n-card' || selector === '.n-card-header' || selector === '.n-card__content')) {
+        continue;
+      }
 
       candidates.push({
         element: el,
         text,
         score: match.score,
         code: match.code,
-        mailId: getMailCandidateId(el, candidates.length),
+        mailId: renderedId ? `rendered:${renderedId}` : getMailCandidateId(el, candidates.length),
       });
     }
   }
 
   candidates.sort((a, b) => b.score - a.score);
   return candidates;
+}
+
+function getCurrentCandidateIds(payload) {
+  return new Set(collectMailCandidates(payload).map((candidate) => candidate.mailId));
 }
 
 function getClickTarget(el) {
@@ -247,16 +272,29 @@ function buildBodyFallbackCandidate(payload) {
   };
 }
 
-async function findVerificationCode(step, payload, excludedCodeSet) {
-  const candidates = collectMailCandidates(payload);
-  const bodyFallback = buildBodyFallbackCandidate(payload);
-  if (bodyFallback) {
-    candidates.push(bodyFallback);
+async function findVerificationCode(step, payload, excludedCodeSet, options = {}) {
+  const {
+    existingMailIds = new Set(),
+    useFallback = false,
+  } = options;
+  const allCandidates = collectMailCandidates(payload);
+  const candidates = allCandidates.filter((candidate) => {
+    if (seenMailIds.has(candidate.mailId)) return false;
+    if (useFallback) return true;
+    return !existingMailIds.has(candidate.mailId);
+  });
+
+  // Only fall back to scanning the whole page when there are no matching list
+  // candidates at all. Otherwise the page body often still contains the
+  // previously opened mail content and can cause old-code false positives.
+  if (!allCandidates.length && useFallback) {
+    const bodyFallback = buildBodyFallbackCandidate(payload);
+    if (bodyFallback && !seenMailIds.has(bodyFallback.mailId)) {
+      candidates.push(bodyFallback);
+    }
   }
 
   for (const candidate of candidates) {
-    if (seenMailIds.has(candidate.mailId)) continue;
-
     await openMailCandidate(candidate);
 
     const expandedText = normalizeText([
@@ -304,6 +342,9 @@ async function handlePollEmail(step, payload) {
 
   await waitForElement('body', 15000);
   log(`步骤 ${step}：开始轮询 Cloudflare 临时邮箱页面（最多 ${maxAttempts} 次）`);
+  const existingMailIds = getCurrentCandidateIds(payload);
+  log(`步骤 ${step}：已记录当前 ${existingMailIds.size} 条旧邮件快照`);
+  const FALLBACK_AFTER = 5;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     log(`步骤 ${step}：正在轮询 Cloudflare 临时邮箱，第 ${attempt}/${maxAttempts} 次`);
@@ -312,9 +353,17 @@ async function handlePollEmail(step, payload) {
       await refreshMailbox();
     }
 
-    const result = await findVerificationCode(step, payload, excludedCodeSet);
+    const useFallback = attempt > FALLBACK_AFTER;
+    const result = await findVerificationCode(step, payload, excludedCodeSet, {
+      existingMailIds,
+      useFallback,
+    });
     if (result) {
       return result;
+    }
+
+    if (attempt === FALLBACK_AFTER + 1) {
+      log(`步骤 ${step}：连续 ${FALLBACK_AFTER} 次未发现新邮件，开始回退到旧邮件匹配`, 'warn');
     }
 
     if (attempt < maxAttempts) {
