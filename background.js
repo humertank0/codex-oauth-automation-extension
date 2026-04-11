@@ -329,7 +329,7 @@ async function closeTabsByUrlPrefix(prefix, options = {}) {
 
 const pendingCommands = new Map(); // source -> { message, resolve, reject, timer }
 
-function queueCommand(source, message, timeout = 15000) {
+function queueCommand(source, message, timeout = 30000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingCommands.delete(source);
@@ -397,10 +397,10 @@ async function reuseOrCreateTab(source, url, options = {}) {
         });
       }
 
-      // For dynamically injected pages like the VPS panel, re-inject immediately.
-      if (options.inject) {
-        if (registry[source]) registry[source].ready = false;
-        await setState({ tabRegistry: registry });
+      // Avoid reinjecting into the same live document when the existing
+      // content script is already healthy. Re-running the same files in one
+      // document causes top-level const redeclaration errors.
+      if (options.inject && !shouldReloadOnReuse && !registry[source]?.ready) {
         if (options.injectSource) {
           await chrome.scripting.executeScript({
             target: { tabId },
@@ -414,6 +414,8 @@ async function reuseOrCreateTab(source, url, options = {}) {
           target: { tabId },
           files: options.inject,
         });
+        await new Promise(r => setTimeout(r, 500));
+      } else if (options.inject && shouldReloadOnReuse) {
         await new Promise(r => setTimeout(r, 500));
       }
 
@@ -2159,6 +2161,7 @@ async function executeStep1(state) {
   await addLog('步骤 1：正在打开 CPA 面板...');
   await reuseOrCreateTab('vps-panel', state.vpsUrl, {
     inject: ['content/utils.js', 'content/vps-panel.js'],
+    injectSource: 'vps-panel',
     reloadIfSameUrl: true,
   });
 
@@ -2800,40 +2803,14 @@ async function executeStep9(state) {
 
   await addLog('步骤 9：正在打开 CPA 面板...');
 
-  let tabId = await getTabId('vps-panel');
-  const alive = tabId && await isTabAlive('vps-panel');
-
-  if (!alive) {
-    await closeConflictingTabsForSource('vps-panel', state.vpsUrl);
-    // Create new tab
-    const tab = await chrome.tabs.create({ url: state.vpsUrl, active: true });
-    tabId = tab.id;
-    await rememberSourceLastUrl('vps-panel', state.vpsUrl);
-    await new Promise(resolve => {
-      const listener = (tid, info) => {
-        if (tid === tabId && info.status === 'complete') {
-          chrome.tabs.onUpdated.removeListener(listener);
-          resolve();
-        }
-      };
-      chrome.tabs.onUpdated.addListener(listener);
-    });
-  } else {
-    await closeConflictingTabsForSource('vps-panel', state.vpsUrl, { excludeTabIds: [tabId] });
-    await chrome.tabs.update(tabId, { active: true });
-    await rememberSourceLastUrl('vps-panel', state.vpsUrl);
-  }
-
-  // Inject scripts directly and wait for them to be ready
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: ['content/utils.js', 'content/vps-panel.js'],
+  await reuseOrCreateTab('vps-panel', state.vpsUrl, {
+    inject: ['content/utils.js', 'content/vps-panel.js'],
+    injectSource: 'vps-panel',
+    reloadIfSameUrl: true,
   });
-  await new Promise(r => setTimeout(r, 1000));
 
-  // Send command directly — bypass queue/ready mechanism
   await addLog('步骤 9：正在填写回调地址...');
-  await chrome.tabs.sendMessage(tabId, {
+  await sendToContentScript('vps-panel', {
     type: 'EXECUTE_STEP',
     step: 9,
     source: 'background',

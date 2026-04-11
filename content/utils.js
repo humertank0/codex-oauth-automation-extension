@@ -1,6 +1,6 @@
 // content/utils.js — Shared utilities for all content scripts
 
-const SCRIPT_SOURCE = (() => {
+var SCRIPT_SOURCE = (() => {
   if (window.__MULTIPAGE_SOURCE) return window.__MULTIPAGE_SOURCE;
   const url = location.href;
   if (url.includes('auth0.openai.com') || url.includes('auth.openai.com') || url.includes('accounts.openai.com')) return 'signup-page';
@@ -13,9 +13,9 @@ const SCRIPT_SOURCE = (() => {
   return 'vps-panel';
 })();
 
-const LOG_PREFIX = `[MultiPage:${SCRIPT_SOURCE}]`;
-const STOP_ERROR_MESSAGE = '流程已被用户停止。';
-let flowStopped = false;
+var LOG_PREFIX = `[MultiPage:${SCRIPT_SOURCE}]`;
+var STOP_ERROR_MESSAGE = '流程已被用户停止。';
+var flowStopped = false;
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'STOP_FLOW') {
@@ -330,7 +330,7 @@ async function humanPause(min = 250, max = 850) {
 
 // Auto-report ready on load
 // Skip ready signal from child iframes of mail pages to avoid overwriting the top frame's registration
-const _isMailChildFrame = (SCRIPT_SOURCE === 'qq-mail' || SCRIPT_SOURCE === 'mail-163' || SCRIPT_SOURCE === 'inbucket-mail' || SCRIPT_SOURCE === 'cloudflare-mail' || SCRIPT_SOURCE === 'burner-mail') && window !== window.top;
+var _isMailChildFrame = (SCRIPT_SOURCE === 'qq-mail' || SCRIPT_SOURCE === 'mail-163' || SCRIPT_SOURCE === 'inbucket-mail' || SCRIPT_SOURCE === 'cloudflare-mail' || SCRIPT_SOURCE === 'burner-mail') && window !== window.top;
 if (!_isMailChildFrame) {
   reportReady();
 }

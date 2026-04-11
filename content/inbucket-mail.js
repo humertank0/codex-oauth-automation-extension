@@ -4,9 +4,9 @@
 // Supported page:
 // - /m/<mailbox>/
 
-const INBUCKET_PREFIX = '[MultiPage:inbucket-mail]';
-const isTopFrame = window === window.top;
-const SEEN_MAIL_IDS_KEY = 'seenInbucketMailIds';
+var INBUCKET_PREFIX = '[MultiPage:inbucket-mail]';
+var isTopFrame = window === window.top;
+var SEEN_MAIL_IDS_KEY = 'seenInbucketMailIds';
 
 console.log(INBUCKET_PREFIX, 'Content script loaded on', location.href, 'frame:', isTopFrame ? 'top' : 'child');
 
@@ -14,7 +14,7 @@ if (!isTopFrame) {
   console.log(INBUCKET_PREFIX, 'Skipping child frame');
 } else {
 
-let seenMailIds = new Set();
+var seenMailIds = new Set();
 
 async function loadSeenMailIds() {
   try {

@@ -1,9 +1,9 @@
 // content/cloudflare-mail.js — Generic polling for Cloudflare temp mail pages (steps 4, 7)
 // Injected dynamically on the configured Cloudflare mailbox page
 
-const CLOUDFLARE_MAIL_PREFIX = '[MultiPage:cloudflare-mail]';
-const isTopFrame = window === window.top;
-const SEEN_MAIL_IDS_KEY = 'seenCloudflareMailIds';
+var CLOUDFLARE_MAIL_PREFIX = '[MultiPage:cloudflare-mail]';
+var isTopFrame = window === window.top;
+var SEEN_MAIL_IDS_KEY = 'seenCloudflareMailIds';
 
 console.log(CLOUDFLARE_MAIL_PREFIX, 'Content script loaded on', location.href, 'frame:', isTopFrame ? 'top' : 'child');
 
@@ -11,7 +11,7 @@ if (!isTopFrame) {
   console.log(CLOUDFLARE_MAIL_PREFIX, 'Skipping child frame');
 } else {
 
-let seenMailIds = new Set();
+var seenMailIds = new Set();
 
 async function loadSeenMailIds() {
   try {
