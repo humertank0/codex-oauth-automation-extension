@@ -397,10 +397,10 @@ async function reuseOrCreateTab(source, url, options = {}) {
         });
       }
 
-      // Avoid reinjecting into the same live document when the existing
-      // content script is already healthy. Re-running the same files in one
-      // document causes top-level const redeclaration errors.
-      if (options.inject && !shouldReloadOnReuse && !registry[source]?.ready) {
+      // After a same-URL reload we are in a fresh document, so dynamic content
+      // scripts must be injected again. For a same live document, only inject
+      // when the registry says the source is not ready.
+      if (options.inject && shouldReloadOnReuse) {
         if (options.injectSource) {
           await chrome.scripting.executeScript({
             target: { tabId },
@@ -415,7 +415,20 @@ async function reuseOrCreateTab(source, url, options = {}) {
           files: options.inject,
         });
         await new Promise(r => setTimeout(r, 500));
-      } else if (options.inject && shouldReloadOnReuse) {
+      } else if (options.inject && !registry[source]?.ready) {
+        if (options.injectSource) {
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            func: (injectedSource) => {
+              window.__MULTIPAGE_SOURCE = injectedSource;
+            },
+            args: [options.injectSource],
+          });
+        }
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: options.inject,
+        });
         await new Promise(r => setTimeout(r, 500));
       }
 
