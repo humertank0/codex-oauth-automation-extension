@@ -228,7 +228,7 @@ async function refreshMailbox() {
   }
 
   simulateClick(refreshAction);
-  await sleep(1200);
+  await sleep(3600);
 }
 
 function buildBodyFallbackCandidate(payload) {

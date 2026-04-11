@@ -2303,7 +2303,7 @@ function getVerificationPollPayload(step, state, overrides = {}) {
       senderFilters: ['openai', 'noreply', 'verify', 'auth', 'duckduckgo', 'forward'],
       subjectFilters: ['verify', 'verification', 'code', '楠岃瘉', 'confirm'],
       targetEmail: state.email,
-      maxAttempts: 5,
+      maxAttempts: 15,
       intervalMs: 3000,
       ...overrides,
     };
@@ -2314,7 +2314,7 @@ function getVerificationPollPayload(step, state, overrides = {}) {
     senderFilters: ['openai', 'noreply', 'verify', 'auth', 'chatgpt', 'duckduckgo', 'forward'],
     subjectFilters: ['verify', 'verification', 'code', '楠岃瘉', 'confirm', 'login'],
     targetEmail: state.email,
-    maxAttempts: 5,
+    maxAttempts: 15,
     intervalMs: 3000,
     ...overrides,
   };
@@ -2378,7 +2378,7 @@ async function pollFreshVerificationCode(step, state, mail, pollOverrides = {}) 
           payload,
         },
         {
-          timeoutMs: 45000,
+          timeoutMs: 135000,
           maxRecoveryAttempts: 2,
         }
       );
@@ -2442,17 +2442,7 @@ async function resolveVerificationStep(step, state, mail, options = {}) {
   }
 
   const nextFilterAfterTimestamp = options.filterAfterTimestamp ?? null;
-  const requestFreshCodeFirst = Boolean(options.requestFreshCodeFirst);
   const maxSubmitAttempts = 3;
-
-  if (requestFreshCodeFirst) {
-    try {
-      await requestVerificationCodeResend(step);
-      await addLog(`步骤 ${step}：已先请求一封新的${getVerificationCodeLabel(step)}验证码，再开始轮询邮箱。`, 'warn');
-    } catch (err) {
-      await addLog(`步骤 ${step}：首次重新获取验证码失败：${err.message}，将继续使用当前时间窗口轮询。`, 'warn');
-    }
-  }
 
   for (let attempt = 1; attempt <= maxSubmitAttempts; attempt++) {
     const result = await pollFreshVerificationCode(step, state, mail, {
@@ -2546,7 +2536,6 @@ async function executeStep4(state) {
 
   await resolveVerificationStep(4, state, mail, {
     filterAfterTimestamp: stepStartedAt,
-    requestFreshCodeFirst: true,
   });
   return;
 }
@@ -2664,7 +2653,6 @@ async function runStep7Attempt(state) {
 
   await resolveVerificationStep(7, state, mail, {
     filterAfterTimestamp: stepStartedAt,
-    requestFreshCodeFirst: true,
   });
 }
 

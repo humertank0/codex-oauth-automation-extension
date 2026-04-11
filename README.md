@@ -2,7 +2,7 @@
 
 一个用于批量跑通 ChatGPT OAuth 注册/登录流程的 Chrome 扩展。
 
-当前版本基于侧边栏控制，支持单步执行、整套自动执行、停止当前流程、保存常用配置，以及通过 DuckDuckGo / Burner Mailbox / QQ / 163 / Inbucket mailbox 协助获取邮箱与验证码。
+当前版本基于侧边栏控制，支持单步执行、整套自动执行、停止当前流程、保存常用配置，以及通过 DuckDuckGo / Burner Mailbox / QQ / 163 / Cloudflare 临时邮箱 / Inbucket mailbox 协助获取邮箱与验证码。
 
 ## 当前能力
 
@@ -13,8 +13,9 @@
 - 自动显示当前使用中的密码，便于后续保存
 - 自动获取注册验证码与登录验证码
 - 支持 `Burner Mailbox` 直接生成临时邮箱并轮询验证码
-- 支持 `QQ Mail`、`163 Mail`、`Inbucket mailbox`
+- 支持 `QQ Mail`、`163 Mail`、`Cloudflare 临时邮箱`、`Inbucket mailbox`
 - 支持从 DuckDuckGo Email Protection 自动生成新的 `@duck.com` 地址
+- 支持从 Cloudflare 临时邮箱 JWT 自动解析邮箱地址，并自动拼接 `?jwt=...` 打开收件页
 - Step 5 同时兼容两种页面：
   - 页面要求填写 `birthday`
   - 页面要求填写 `age`
@@ -30,9 +31,10 @@
 - 你自己的 CPA 管理面板，且页面结构与当前脚本适配
 - 至少准备一种验证码接收方式：
   - Burner Mailbox
+  - Cloudflare 临时邮箱页面 + JWT
   - DuckDuckGo `@duck.com` + QQ / 163 / Inbucket 转发
   - 手动填写一个可收信邮箱
-- 如果使用 `QQ` / `163` / `Inbucket` / `Burner Mailbox`，对应页面需要提前能正常打开
+- 如果使用 `QQ` / `163` / `Cloudflare 临时邮箱` / `Inbucket` / `Burner Mailbox`，对应页面需要提前能正常打开
 
 ## 安装
 
@@ -56,18 +58,54 @@ Step 1 和 Step 9 都依赖这个地址。
 
 ### `Mail`
 
-支持四种验证码来源：
+支持五种验证码来源：
 
 - `Burner Mailbox`
 - `163 Mail`
 - `QQ Mail`
+- `Cloudflare 临时邮箱`
 - `Inbucket`
 
 说明：
 
 - `Burner Mailbox` 可直接生成一个临时邮箱地址，并用于后续验证码轮询
 - `QQ` 和 `163` 用于直接轮询网页邮箱
+- `Cloudflare 临时邮箱` 使用你填写的域名和 JWT 拼出邮箱页面 URL，并从 JWT 自动带出邮箱地址
 - `Inbucket` 通过你在侧边栏里配置的 host 访问 `mailbox` 页面：`https://<your-inbucket-host>/m/<mailbox>/`
+
+### `CF 域名`
+
+仅当 `Mail = Cloudflare 临时邮箱` 时显示，注意使用的是duck邮箱，需要将该临时cf邮箱绑定duck邮箱。
+
+支持两种格式：
+
+- `mail.example.com`
+- `https://mail.example.com/`
+
+脚本会自动规范化成基础地址，并拼接：
+
+```txt
+https://<your-cloudflare-mail-host>/?jwt=<your-jwt>
+```
+
+### `CF JWT`
+
+仅当 `Mail = Cloudflare 临时邮箱` 时显示。
+
+这里填写 Cloudflare 临时邮箱页面使用的 JWT。脚本会：
+
+- 从 JWT 中解析 `address`
+- 自动把邮箱写入侧边栏 `Email`
+- 在 Step 4 / Step 7 自动打开 `?jwt=...` 对应的邮箱页面轮询验证码
+
+Cloudflare 临时邮箱的搭建可参考 LINUX DO 社区教程：
+
+- [`〖教程〗2026版 小白也能看懂的自建Cloudflare临时邮箱教程（域名邮箱）`](https://linux.do/t/topic/1666961)
+
+致谢：
+
+- 感谢 LINUX DO 社区佬友 [`XiaoHuang`](https://linux.do/u/XiaoHuang) 提供详细搭建教程
+- 感谢 `cloudflare_temp_email` 项目原作者 `@awsl` 及相关文档作者提供项目与文档基础
 
 ### `Mailbox`
 
@@ -106,15 +144,17 @@ https://<your-inbucket-host>/m/<mailbox>/
 
 Step 3 使用的注册邮箱。
 
-来源有三种：
+来源有四种：
 
 - 当 `Mail = Burner Mailbox` 时，点击 `获取` 会自动从 Burner 生成新邮箱
+- 当 `Mail = Cloudflare 临时邮箱` 时，点击 `获取` 会自动从 JWT 解析邮箱地址
 - 手动粘贴
 - 点击 `获取` 从 DuckDuckGo Email Protection 自动获取一个新的 `@duck.com`
 
 注意：
 
 - 当 `Mail = Burner Mailbox` 时，邮箱生成与验证码轮询都走 Burner
+- 当 `Mail = Cloudflare 临时邮箱` 时，邮箱由 JWT 解析，验证码轮询走 Cloudflare 页面
 - 当 `Mail = QQ / 163 / Inbucket` 时，`获取` 按钮仍默认走 DuckDuckGo 地址获取
 - 如果你使用 Inbucket，它只是验证码收件箱，不会自动生成 Inbucket 地址
 
@@ -219,12 +259,15 @@ Step 3 使用的注册邮箱。
 
 - `content/qq-mail.js`
 - `content/mail-163.js`
+- `content/cloudflare-mail.js`
 - `content/inbucket-mail.js`
 
 邮件匹配规则以以下关键词为主：
 
 - 发件人：`openai`、`noreply`、`verify`、`auth`、`duckduckgo`、`forward`
 - 标题：`verify`、`verification`、`code`、`验证`、`confirm`
+
+当前逻辑会先等待首封验证码，不会一进入页面就立刻重新发送；若等待窗口内仍未收到，再进入补发与重试逻辑。
 
 ### Step 5: Fill Name / Birthday
 
@@ -249,6 +292,8 @@ Step 3 使用的注册邮箱。
 ### Step 7: Get Login Code
 
 与 Step 4 类似，但会使用稍微不同的关键词组合去找登录验证码邮件。
+
+等待策略与 Step 4 一致：先等首封，再按需要补发。
 
 ### Step 8: Manual OAuth Confirm
 
@@ -333,6 +378,8 @@ Burner 通过 `content/burner-mail.js`：
 - CPA 管理密钥
 - 自定义密码
 - 邮箱服务
+- Cloudflare 域名
+- Cloudflare JWT
 - Inbucket 主机
 - Inbucket 邮箱名
 - 兜底开关
@@ -358,6 +405,7 @@ content/duck-mail.js       Duck 邮箱自动获取
 content/burner-mail.js     Burner Mailbox 邮箱生成与验证码轮询
 content/qq-mail.js         QQ 邮箱验证码轮询
 content/mail-163.js        163 邮箱验证码轮询
+content/cloudflare-mail.js Cloudflare 临时邮箱验证码轮询
 content/inbucket-mail.js   Inbucket mailbox 验证码轮询
 sidepanel/                 侧边栏 UI
 ```
@@ -425,3 +473,13 @@ sidepanel/                 侧边栏 UI
 - 没有硬编码你的 CPA 地址、密码或账户
 - 自定义密码只存在当前会话存储中
 - 邮箱和密码会被记录到本轮 `accounts` 中，便于追踪本次运行结果
+
+## License
+
+本仓库为基于上游项目继续修改的 fork / 衍生版本，继续沿用上游项目的 Apache License 2.0 协议，详见 [LICENSE](/home/humertank/Documents/codex-oauth-automation-extension/LICENSE)。
+
+如果你基于当前仓库继续 fork、修改或再分发，至少应保持以下几点：
+
+- 保留原有许可证与版权声明
+- 按 Apache-2.0 要求附带许可证文本
+- 明确标注你自己的修改内容，避免与上游原始版本混淆
