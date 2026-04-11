@@ -330,7 +330,7 @@ async function humanPause(min = 250, max = 850) {
 
 // Auto-report ready on load
 // Skip ready signal from child iframes of mail pages to avoid overwriting the top frame's registration
-const _isMailChildFrame = (SCRIPT_SOURCE === 'qq-mail' || SCRIPT_SOURCE === 'mail-163' || SCRIPT_SOURCE === 'inbucket-mail' || SCRIPT_SOURCE === 'burner-mail') && window !== window.top;
+const _isMailChildFrame = (SCRIPT_SOURCE === 'qq-mail' || SCRIPT_SOURCE === 'mail-163' || SCRIPT_SOURCE === 'inbucket-mail' || SCRIPT_SOURCE === 'cloudflare-mail' || SCRIPT_SOURCE === 'burner-mail') && window !== window.top;
 if (!_isMailChildFrame) {
   reportReady();
 }

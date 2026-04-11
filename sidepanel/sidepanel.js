@@ -30,6 +30,10 @@ const btnClearLog = document.getElementById('btn-clear-log');
 const inputVpsUrl = document.getElementById('input-vps-url');
 const inputVpsPassword = document.getElementById('input-vps-password');
 const selectMailProvider = document.getElementById('select-mail-provider');
+const rowCloudflareHost = document.getElementById('row-cloudflare-host');
+const inputCloudflareHost = document.getElementById('input-cloudflare-host');
+const rowCloudflareJwt = document.getElementById('row-cloudflare-jwt');
+const inputCloudflareJwt = document.getElementById('input-cloudflare-jwt');
 const rowInbucketHost = document.getElementById('row-inbucket-host');
 const inputInbucketHost = document.getElementById('input-inbucket-host');
 const rowInbucketMailbox = document.getElementById('row-inbucket-mailbox');
@@ -287,6 +291,8 @@ function collectSettingsPayload() {
     vpsPassword: inputVpsPassword.value,
     customPassword: inputPassword.value,
     mailProvider: selectMailProvider.value,
+    cloudflareHost: inputCloudflareHost.value.trim(),
+    cloudflareJwt: inputCloudflareJwt.value.trim(),
     inbucketHost: inputInbucketHost.value.trim(),
     inbucketMailbox: inputInbucketMailbox.value.trim(),
     autoRunSkipFailures: inputAutoSkipFailures.checked,
@@ -464,6 +470,12 @@ async function restoreState() {
     if (state.mailProvider) {
       selectMailProvider.value = state.mailProvider;
     }
+    if (state.cloudflareHost) {
+      inputCloudflareHost.value = state.cloudflareHost;
+    }
+    if (state.cloudflareJwt) {
+      inputCloudflareJwt.value = state.cloudflareJwt;
+    }
     if (state.inbucketHost) {
       inputInbucketHost.value = state.inbucketHost;
     }
@@ -500,12 +512,17 @@ function syncPasswordField(state) {
 }
 
 function updateMailProviderUI() {
+  const useCloudflare = selectMailProvider.value === 'cloudflare';
   const useInbucket = selectMailProvider.value === 'inbucket';
+  rowCloudflareHost.style.display = useCloudflare ? '' : 'none';
+  rowCloudflareJwt.style.display = useCloudflare ? '' : 'none';
   rowInbucketHost.style.display = useInbucket ? '' : 'none';
   rowInbucketMailbox.style.display = useInbucket ? '' : 'none';
   inputEmail.placeholder = selectMailProvider.value === 'burner'
     ? '可自动获取 Burner 邮箱，或手动粘贴邮箱'
-    : '自动获取或手动粘贴邮箱';
+    : selectMailProvider.value === 'cloudflare'
+      ? '可由 Cloudflare JWT 自动带出邮箱，或手动粘贴邮箱'
+      : '自动获取或手动粘贴邮箱';
 }
 
 // ============================================================
@@ -755,9 +772,46 @@ async function fetchBurnerEmail(options = {}) {
   }
 }
 
+async function fetchCloudflareEmail(options = {}) {
+  const { showFailureToast = true } = options;
+  const defaultLabel = '获取';
+  btnFetchEmail.disabled = true;
+  btnFetchEmail.textContent = '...';
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'FETCH_CLOUDFLARE_EMAIL',
+      source: 'sidepanel',
+      payload: {},
+    });
+
+    if (response?.error) {
+      throw new Error(response.error);
+    }
+    if (!response?.email) {
+      throw new Error('未返回 Cloudflare 邮箱地址。');
+    }
+
+    inputEmail.value = response.email;
+    showToast(`已获取 ${response.email}`, 'success', 2500);
+    return response.email;
+  } catch (err) {
+    if (showFailureToast) {
+      showToast(`自动获取失败：${err.message}`, 'error');
+    }
+    throw err;
+  } finally {
+    btnFetchEmail.disabled = false;
+    btnFetchEmail.textContent = defaultLabel;
+  }
+}
+
 async function fetchEmailForCurrentProvider(options = {}) {
   if (selectMailProvider.value === 'burner') {
     return await fetchBurnerEmail(options);
+  }
+  if (selectMailProvider.value === 'cloudflare') {
+    return await fetchCloudflareEmail(options);
   }
   return await fetchDuckEmail(options);
 }
@@ -1028,6 +1082,22 @@ inputInbucketHost.addEventListener('input', () => {
   scheduleSettingsAutoSave();
 });
 inputInbucketHost.addEventListener('blur', () => {
+  saveSettings({ silent: true }).catch(() => {});
+});
+
+inputCloudflareHost.addEventListener('input', () => {
+  markSettingsDirty(true);
+  scheduleSettingsAutoSave();
+});
+inputCloudflareHost.addEventListener('blur', () => {
+  saveSettings({ silent: true }).catch(() => {});
+});
+
+inputCloudflareJwt.addEventListener('input', () => {
+  markSettingsDirty(true);
+  scheduleSettingsAutoSave();
+});
+inputCloudflareJwt.addEventListener('blur', () => {
   saveSettings({ silent: true }).catch(() => {});
 });
 

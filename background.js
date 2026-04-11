@@ -22,7 +22,9 @@ const PERSISTED_SETTING_DEFAULTS = {
   vpsPassword: '', // VPS 面板登录密码，可手动填写。
   customPassword: '', // 自定义账号密码；留空时由程序自动生成随机密码。
   autoRunSkipFailures: false, // 自动运行遇到失败步骤后，是否继续执行后续流程。
-  mailProvider: '163', // 验证码邮箱来源，当前支持 163 / qq / inbucket / burner。
+  mailProvider: '163', // 验证码邮箱来源，当前支持 163 / qq / cloudflare / inbucket / burner。
+  cloudflareHost: '', // 仅当 mailProvider 为 cloudflare 时填写邮箱页面域名或完整入口地址。
+  cloudflareJwt: '', // 仅当 mailProvider 为 cloudflare 时填写邮箱页面 JWT。
   inbucketHost: '', // 仅当 mailProvider 为 inbucket 时填写 Inbucket 地址，其他情况保持为空。
   inbucketMailbox: '', // 仅当 mailProvider 为 inbucket 时填写邮箱名，其他情况保持为空。
 };
@@ -132,6 +134,7 @@ async function resetState() {
     chrome.storage.session.get([
       'seenCodes',
       'seenBurnerMailIds',
+      'seenCloudflareMailIds',
       'seenInbucketMailIds',
       'accounts',
       'tabRegistry',
@@ -145,6 +148,7 @@ async function resetState() {
     ...persistedSettings,
     seenCodes: prev.seenCodes || [],
     seenBurnerMailIds: prev.seenBurnerMailIds || [],
+    seenCloudflareMailIds: prev.seenCloudflareMailIds || [],
     seenInbucketMailIds: prev.seenInbucketMailIds || [],
     accounts: prev.accounts || [],
     tabRegistry: prev.tabRegistry || {},
@@ -617,6 +621,7 @@ function getSourceLabel(source) {
     'qq-mail': 'QQ 邮箱',
     'mail-163': '163 邮箱',
     'inbucket-mail': 'Inbucket 邮箱',
+    'cloudflare-mail': 'Cloudflare 临时邮箱',
     'duck-mail': 'Duck 邮箱',
     'burner-mail': 'Burner Mailbox',
   };
@@ -1077,6 +1082,8 @@ async function handleMessage(message, sender) {
       if (message.payload.customPassword !== undefined) updates.customPassword = message.payload.customPassword;
       if (message.payload.autoRunSkipFailures !== undefined) updates.autoRunSkipFailures = Boolean(message.payload.autoRunSkipFailures);
       if (message.payload.mailProvider !== undefined) updates.mailProvider = message.payload.mailProvider;
+      if (message.payload.cloudflareHost !== undefined) updates.cloudflareHost = message.payload.cloudflareHost;
+      if (message.payload.cloudflareJwt !== undefined) updates.cloudflareJwt = message.payload.cloudflareJwt;
       if (message.payload.inbucketHost !== undefined) updates.inbucketHost = message.payload.inbucketHost;
       if (message.payload.inbucketMailbox !== undefined) updates.inbucketMailbox = message.payload.inbucketMailbox;
       await setPersistentSettings(updates);
@@ -1113,6 +1120,17 @@ async function handleMessage(message, sender) {
         throw new Error('自动流程运行中，当前不能手动获取 Burner Mailbox 邮箱。');
       }
       const email = await fetchBurnerEmail(message.payload || {});
+      await resumeAutoRun();
+      return { ok: true, email };
+    }
+
+    case 'FETCH_CLOUDFLARE_EMAIL': {
+      clearStopRequest();
+      const state = await getState();
+      if (isAutoRunLockedState(state)) {
+        throw new Error('自动流程运行中，当前不能手动获取 Cloudflare 临时邮箱。');
+      }
+      const email = await fetchCloudflareEmail(state);
       await resumeAutoRun();
       return { ok: true, email };
     }
@@ -1341,6 +1359,78 @@ async function fetchDuckEmail(options = {}) {
   await setEmailState(result.email);
   await addLog(`Duck 邮箱：${result.generated ? '已生成' : '已读取'} ${result.email}`, 'ok');
   return result.email;
+}
+
+function base64UrlDecode(value) {
+  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
+  return atob(normalized + padding);
+}
+
+function parseCloudflareJwtAddress(jwt) {
+  const token = String(jwt || '').trim();
+  if (!token) {
+    return '';
+  }
+
+  const parts = token.split('.');
+  if (parts.length < 2) {
+    throw new Error('Cloudflare JWT 格式无效。');
+  }
+
+  try {
+    const payload = JSON.parse(base64UrlDecode(parts[1]));
+    return String(payload.address || '').trim();
+  } catch {
+    throw new Error('Cloudflare JWT 无法解析出邮箱地址。');
+  }
+}
+
+function normalizeCloudflareMailboxBaseUrl(rawValue) {
+  const value = String(rawValue || '').trim();
+  if (!value) return '';
+
+  const candidate = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(value) ? value : `https://${value}`;
+
+  try {
+    const parsed = new URL(candidate);
+    parsed.search = '';
+    parsed.hash = '';
+    if (!parsed.pathname || parsed.pathname === '/') {
+      parsed.pathname = '/';
+    }
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function buildCloudflareMailboxUrl(rawHost, jwt) {
+  const baseUrl = normalizeCloudflareMailboxBaseUrl(rawHost);
+  const token = String(jwt || '').trim();
+  if (!baseUrl) {
+    throw new Error('Cloudflare 邮箱域名或入口地址为空或无效。');
+  }
+  if (!token) {
+    throw new Error('Cloudflare JWT 为空。');
+  }
+
+  const parsed = new URL(baseUrl);
+  parsed.searchParams.set('jwt', token);
+  return parsed.toString();
+}
+
+async function fetchCloudflareEmail(state) {
+  throwIfStopped();
+
+  const email = parseCloudflareJwtAddress(state.cloudflareJwt);
+  if (!email) {
+    throw new Error('Cloudflare JWT 中没有 address 字段。');
+  }
+
+  await setEmailState(email);
+  await addLog(`Cloudflare 临时邮箱：已从 JWT 解析邮箱 ${email}`, 'ok');
+  return email;
 }
 
 async function probeBurnerMailboxState(tabId) {
@@ -2135,6 +2225,16 @@ function getMailConfig(state) {
   const provider = state.mailProvider || 'qq';
   if (provider === 'burner') {
     return { source: 'burner-mail', url: BURNER_MAILBOX_URL, label: 'Burner Mailbox' };
+  }
+  if (provider === 'cloudflare') {
+    return {
+      source: 'cloudflare-mail',
+      url: buildCloudflareMailboxUrl(state.cloudflareHost, state.cloudflareJwt),
+      label: 'Cloudflare 临时邮箱',
+      navigateOnReuse: true,
+      inject: ['content/utils.js', 'content/cloudflare-mail.js'],
+      injectSource: 'cloudflare-mail',
+    };
   }
   if (provider === '163') {
     return { source: 'mail-163', url: 'https://mail.163.com/js6/main.jsp?df=mail163_letter#module=mbox.ListModule%7C%7B%22fid%22%3A1%2C%22order%22%3A%22date%22%2C%22desc%22%3Atrue%7D', label: '163 邮箱' };
