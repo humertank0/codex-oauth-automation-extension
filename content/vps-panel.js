@@ -296,6 +296,17 @@ async function step1_getOAuthLink(payload) {
 async function step9_vpsVerify(payload) {
   await ensureOAuthManagementPage(payload?.vpsPassword, 9);
 
+  const existingSuccessStatus = getStatusBadgeText();
+  if (existingSuccessStatus === '认证成功！') {
+    log('步骤 9：CPA 面板已处于“认证成功！”状态，跳过重复提交。', 'ok');
+    reportComplete(9, {
+      localhostUrl: payload?.localhostUrl || '',
+      verifiedStatus: existingSuccessStatus,
+      alreadyVerified: true,
+    });
+    return;
+  }
+
   // Get localhostUrl from payload (passed directly by background) or fallback to state
   let localhostUrl = payload?.localhostUrl;
   if (!localhostUrl) {

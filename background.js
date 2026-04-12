@@ -2180,7 +2180,6 @@ async function executeStep1(state) {
   await reuseOrCreateTab('vps-panel', state.vpsUrl, {
     inject: ['content/utils.js', 'content/vps-panel.js'],
     injectSource: 'vps-panel',
-    reloadIfSameUrl: true,
   });
 
   await sendToContentScript('vps-panel', {
@@ -2583,19 +2582,24 @@ async function executeStep5(state) {
 // Step 6: Login ChatGPT (Background opens tab, chatgpt.js handles login)
 // ============================================================
 
-async function refreshOAuthUrlBeforeStep6(state) {
+async function ensureOAuthUrlBeforeStep6(state) {
+  if (state.oauthUrl) {
+    await addLog('步骤 6：复用当前流程中已有的 CPA OAuth 链接。');
+    return state.oauthUrl;
+  }
+
   if (!state.vpsUrl) {
     throw new Error('尚未配置 CPA 地址，请先在侧边栏填写。');
   }
 
-  await addLog('步骤 6：正在刷新登录用的 CPA OAuth 链接...');
-  const waitForFreshOAuth = waitForStepComplete(1, 120000);
+  await addLog('步骤 6：当前流程里还没有 CPA OAuth 链接，正在前往 CPA 面板获取...');
+  const waitForOAuth = waitForStepComplete(1, 120000);
   await executeStep1(state);
-  await waitForFreshOAuth;
+  await waitForOAuth;
 
   const latestState = await getState();
   if (!latestState.oauthUrl) {
-    throw new Error('刷新 OAuth 链接后仍未拿到可用链接。');
+    throw new Error('获取 OAuth 链接后仍未拿到可用链接。');
   }
 
   return latestState.oauthUrl;
@@ -2606,7 +2610,7 @@ async function executeStep6(state) {
     throw new Error('缺少邮箱地址，请先完成步骤 3。');
   }
 
-  const oauthUrl = await refreshOAuthUrlBeforeStep6(state);
+  const oauthUrl = await ensureOAuthUrlBeforeStep6(state);
 
   await addLog('步骤 6：正在打开最新 OAuth 链接并登录...');
   // Reuse the signup-page tab — navigate it to the OAuth URL
@@ -2824,7 +2828,6 @@ async function executeStep9(state) {
   await reuseOrCreateTab('vps-panel', state.vpsUrl, {
     inject: ['content/utils.js', 'content/vps-panel.js'],
     injectSource: 'vps-panel',
-    reloadIfSameUrl: true,
   });
 
   await addLog('步骤 9：正在填写回调地址...');
