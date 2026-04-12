@@ -191,6 +191,12 @@ async function prepareLoginCodeFlow(timeout = 15000) {
   while (Date.now() - start < timeout) {
     throwIfStopped();
 
+    if (await tryRecoverTransientAuthError(7)) {
+      loggedPasswordPage = false;
+      loggedVerificationPage = false;
+      continue;
+    }
+
     const target = getVerificationCodeTarget();
     if (target) {
       log('步骤 7：验证码页面已就绪。');
@@ -339,9 +345,9 @@ async function step3_fillEmailPassword(payload) {
       await sleep(2000);
     }
 
-    try {
-      passwordInput = await waitForElement('input[type="password"]', 10000);
-    } catch {
+    const passwordState = await waitForPasswordFieldAfterSubmit(3, { timeout: 15000 });
+    passwordInput = passwordState.passwordInput;
+    if (!passwordInput) {
       throw new Error('提交邮箱后仍未找到密码输入框。URL: ' + location.href);
     }
   }
@@ -436,6 +442,75 @@ function getPrimaryContinueButton() {
 
   const buttons = document.querySelectorAll('button, [role="button"]');
   return Array.from(buttons).find((el) => isVisibleElement(el) && /继续|Continue/i.test(el.textContent || '')) || null;
+}
+
+function getAuthRetryButton() {
+  const direct = document.querySelector('button[data-dd-action-name="Try again"]');
+  if (direct && isVisibleElement(direct) && isActionEnabled(direct)) {
+    return direct;
+  }
+
+  const candidates = document.querySelectorAll('button, [role="button"], a, [role="link"]');
+  return Array.from(candidates).find((el) => {
+    if (!isVisibleElement(el) || !isActionEnabled(el)) return false;
+    const text = getActionText(el);
+    return /重试|try\s+again/i.test(text);
+  }) || null;
+}
+
+function isTransientAuthErrorPage() {
+  const retryButton = getAuthRetryButton();
+  if (!retryButton) return false;
+
+  const text = getPageTextSnapshot();
+  return Boolean(
+    SIGNUP_PASSWORD_ERROR_TITLE_PATTERN.test(text)
+    || SIGNUP_PASSWORD_ERROR_TITLE_PATTERN.test(document.title || '')
+    || SIGNUP_PASSWORD_ERROR_DETAIL_PATTERN.test(text)
+  );
+}
+
+async function tryRecoverTransientAuthError(step, options = {}) {
+  const { cooldownMs = 1500, logLabel = '认证页“糟糕，出错了”异常' } = options;
+  const retryButton = getAuthRetryButton();
+  if (!retryButton || !isTransientAuthErrorPage()) {
+    return false;
+  }
+
+  log(`步骤 ${step}：检测到${logLabel}，正在点击“重试”...`, 'warn');
+  await humanPause(350, 900);
+  simulateClick(retryButton);
+  await sleep(cooldownMs);
+  return true;
+}
+
+async function waitForPasswordFieldAfterSubmit(step, options = {}) {
+  const {
+    timeout = 15000,
+    allowVerification = false,
+  } = options;
+
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+
+    if (await tryRecoverTransientAuthError(step)) {
+      continue;
+    }
+
+    const passwordInput = document.querySelector('input[type="password"]');
+    if (passwordInput && isVisibleElement(passwordInput)) {
+      return { passwordInput };
+    }
+
+    if (allowVerification && (getVerificationCodeTarget() || (isEmailVerificationPage() && isVerificationPageStillVisible()))) {
+      return { passwordInput: null, verificationReady: true };
+    }
+
+    await sleep(200);
+  }
+
+  return { passwordInput: null, verificationReady: false };
 }
 
 function isVerificationPageStillVisible() {
@@ -554,6 +629,10 @@ async function waitForStep5SubmitOutcome(timeout = 15000) {
   while (Date.now() - start < timeout) {
     throwIfStopped();
 
+    if (await tryRecoverTransientAuthError(5)) {
+      continue;
+    }
+
     const errorText = getStep5ErrorText();
     if (errorText) {
       return { invalidProfile: true, errorText };
@@ -605,28 +684,11 @@ function getSignupPasswordSubmitButton({ allowDisabled = false } = {}) {
 }
 
 function getSignupRetryButton() {
-  const direct = document.querySelector('button[data-dd-action-name="Try again"]');
-  if (direct && isVisibleElement(direct) && isActionEnabled(direct)) {
-    return direct;
-  }
-
-  const candidates = document.querySelectorAll('button, [role="button"]');
-  return Array.from(candidates).find((el) => {
-    if (!isVisibleElement(el) || !isActionEnabled(el)) return false;
-    const text = getActionText(el);
-    return /重试|try\s+again/i.test(text);
-  }) || null;
+  return getAuthRetryButton();
 }
 
 function isSignupPasswordErrorPage() {
-  if (!isSignupPasswordPage()) return false;
-  const text = getPageTextSnapshot();
-  return Boolean(
-    getSignupRetryButton()
-    && (SIGNUP_PASSWORD_ERROR_TITLE_PATTERN.test(text)
-      || SIGNUP_PASSWORD_ERROR_DETAIL_PATTERN.test(text)
-      || SIGNUP_PASSWORD_ERROR_TITLE_PATTERN.test(document.title || ''))
-  );
+  return isSignupPasswordPage() && isTransientAuthErrorPage();
 }
 
 function isSignupEmailAlreadyExistsPage() {
@@ -638,15 +700,15 @@ function inspectSignupVerificationState() {
     return { state: 'step5' };
   }
 
-  if (isVerificationPageStillVisible()) {
-    return { state: 'verification' };
-  }
-
-  if (isSignupPasswordErrorPage()) {
+  if (isTransientAuthErrorPage()) {
     return {
       state: 'error',
       retryButton: getSignupRetryButton(),
     };
+  }
+
+  if (isVerificationPageStillVisible()) {
+    return { state: 'verification' };
   }
 
   if (isSignupEmailAlreadyExistsPage()) {
@@ -760,6 +822,10 @@ async function waitForVerificationSubmitOutcome(step, timeout) {
 
   while (Date.now() - start < resolvedTimeout) {
     throwIfStopped();
+
+    if (await tryRecoverTransientAuthError(step)) {
+      continue;
+    }
 
     const errorText = getVerificationErrorText();
     if (errorText) {
@@ -892,8 +958,11 @@ async function step6_login(payload) {
 
   await sleep(2000);
 
-  // Check for password field
-  const passwordInput = document.querySelector('input[type="password"]');
+  const passwordState = await waitForPasswordFieldAfterSubmit(6, {
+    timeout: 15000,
+    allowVerification: true,
+  });
+  const passwordInput = passwordState.passwordInput;
   if (passwordInput) {
     log('步骤 6：已找到密码输入框，正在填写密码...');
     await humanPause(550, 1450);
@@ -914,7 +983,11 @@ async function step6_login(payload) {
   }
 
   // No password field — OTP flow
-  log('步骤 6：未发现密码输入框，可能进入验证码流程或自动跳转。');
+  if (passwordState.verificationReady) {
+    log('步骤 6：页面已进入验证码流程。');
+  } else {
+    log('步骤 6：未发现密码输入框，可能进入验证码流程或自动跳转。');
+  }
   reportComplete(6, { needsOTP: true });
 }
 
@@ -949,6 +1022,9 @@ async function findContinueButton() {
   const start = Date.now();
   while (Date.now() - start < 10000) {
     throwIfStopped();
+    if (await tryRecoverTransientAuthError(8)) {
+      continue;
+    }
     if (isAddPhonePageReady()) {
       throw new Error('当前页面已进入手机号页面，不是 OAuth 授权同意页。URL: ' + location.href);
     }
