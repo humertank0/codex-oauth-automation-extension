@@ -8,7 +8,7 @@ const BURNER_CHALLENGE_REQUIRED_MESSAGE = 'Burner Mailbox security verification 
 console.log(BURNER_PREFIX, 'Content script loaded on', location.href);
 
 let seenMailIds = new Set();
-loadSeenMailIds();
+let seenMailIdsReady = loadSeenMailIds();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (
@@ -508,6 +508,7 @@ async function pollBurnerMailbox(step, payload) {
     intervalMs = 3000,
   } = payload;
 
+  await seenMailIdsReady;
   await waitForMailboxReady(20000, { detectChallenge: true });
   log(`步骤 ${step}：开始轮询 Burner Mailbox（最多 ${maxAttempts} 次）`);
 

@@ -10,6 +10,11 @@ const STOP_ERROR_MESSAGE = '流程已被用户停止。';
 const HUMAN_STEP_DELAY_MIN = 700;
 const HUMAN_STEP_DELAY_MAX = 2200;
 const STEP7_RESTART_MAX_ROUNDS = 8;
+const DEFAULT_STEP_WAIT_TIMEOUT_MS = 120000;
+const STEP_WAIT_TIMEOUTS = {
+  4: 420000,
+  7: 2400000,
+};
 
 initializeSessionStorageAccess();
 
@@ -1342,7 +1347,7 @@ async function executeStep(step) {
  */
 async function executeStepAndWait(step, delayAfter = 2000) {
   throwIfStopped();
-  const promise = waitForStepComplete(step, 120000);
+  const promise = waitForStepComplete(step, STEP_WAIT_TIMEOUTS[step] || DEFAULT_STEP_WAIT_TIMEOUT_MS);
   await executeStep(step);
   await promise;
   // Extra delay for page transitions / DOM updates

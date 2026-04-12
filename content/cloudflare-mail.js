@@ -12,6 +12,7 @@ if (!isTopFrame) {
 } else {
 
 var seenMailIds = new Set();
+var seenMailIdsReady = loadSeenMailIds();
 
 async function loadSeenMailIds() {
   try {
@@ -32,8 +33,6 @@ async function persistSeenMailIds() {
     console.warn(CLOUDFLARE_MAIL_PREFIX, 'Could not persist seen mail ids, continuing in-memory only:', err?.message || err);
   }
 }
-
-loadSeenMailIds();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'POLL_EMAIL') {
@@ -340,6 +339,7 @@ async function handlePollEmail(step, payload) {
   } = payload || {};
   const excludedCodeSet = new Set(excludeCodes.filter(Boolean));
 
+  await seenMailIdsReady;
   await waitForElement('body', 15000);
   log(`步骤 ${step}：开始轮询 Cloudflare 临时邮箱页面（最多 ${maxAttempts} 次）`);
   const existingMailIds = getCurrentCandidateIds(payload);

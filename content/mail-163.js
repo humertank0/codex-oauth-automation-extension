@@ -19,6 +19,7 @@ if (!isTopFrame) {
 
 // Track codes we've already seen — persisted in chrome.storage.session to survive script re-injection
 let seenCodes = new Set();
+let seenCodesReady = loadSeenCodes();
 
 async function loadSeenCodes() {
   try {
@@ -31,9 +32,6 @@ async function loadSeenCodes() {
     console.warn(MAIL163_PREFIX, 'Session storage unavailable, using in-memory seen codes:', err?.message || err);
   }
 }
-
-// Load previously seen codes on startup
-loadSeenCodes();
 
 async function persistSeenCodes() {
   try {
@@ -154,6 +152,7 @@ async function handlePollEmail(step, payload) {
   const excludedCodeSet = new Set(excludeCodes.filter(Boolean));
   const filterAfterMinute = normalizeMinuteTimestamp(Number(filterAfterTimestamp) || 0);
 
+  await seenCodesReady;
   log(`步骤 ${step}：开始轮询 163 邮箱（最多 ${maxAttempts} 次）`);
   if (filterAfterMinute) {
     log(`步骤 ${step}：仅尝试 ${new Date(filterAfterMinute).toLocaleString('zh-CN', { hour12: false })} 及之后时间的邮件。`);

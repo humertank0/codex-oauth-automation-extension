@@ -15,6 +15,7 @@ if (!isTopFrame) {
 } else {
 
 var seenMailIds = new Set();
+var seenMailIdsReady = loadSeenMailIds();
 
 async function loadSeenMailIds() {
   try {
@@ -35,8 +36,6 @@ async function persistSeenMailIds() {
     console.warn(INBUCKET_PREFIX, 'Could not persist seen mail ids, continuing in-memory only:', err?.message || err);
   }
 }
-
-loadSeenMailIds();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'POLL_EMAIL') {
@@ -175,6 +174,7 @@ async function handleMailboxPollEmail(step, payload) {
   } = payload || {};
   const excludedCodeSet = new Set(excludeCodes.filter(Boolean));
 
+  await seenMailIdsReady;
   log(`步骤 ${step}：开始轮询 Inbucket 邮箱页面（最多 ${maxAttempts} 次）`);
 
   try {
